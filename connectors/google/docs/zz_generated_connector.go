@@ -48,8 +48,33 @@ type Credentials struct {
 type CredentialSource = sdkgo.RefreshingCredentialProvider[Credentials]
 
 type Connection struct {
-	client    *Client
-	reference sdkgo.ConnectionRef
+	client     *Client
+	operations Operations
+	reference  sdkgo.ConnectionRef
+}
+
+// Operations returns the operations that this connector's Step factories invoke, one accessor per operation.
+// NewConnection uses the client's operations; NewConnectionWithOperations accepts another implementation.
+type Operations interface {
+	GetDocumentText() sdkgo.Query[GetDocumentTextInput, GetDocumentTextOutput]
+	CreateDocument() sdkgo.Mutation[CreateDocumentInput, CreateDocumentOutput]
+	ReplaceDocumentText() sdkgo.Mutation[ReplaceDocumentTextInput, ReplaceDocumentTextOutput]
+	AppendText() sdkgo.Mutation[AppendTextInput, AppendTextOutput]
+}
+
+type clientOperations struct{ client *Client }
+
+func (operations clientOperations) GetDocumentText() sdkgo.Query[GetDocumentTextInput, GetDocumentTextOutput] {
+	return operations.client.GetDocumentText()
+}
+func (operations clientOperations) CreateDocument() sdkgo.Mutation[CreateDocumentInput, CreateDocumentOutput] {
+	return operations.client.CreateDocument()
+}
+func (operations clientOperations) ReplaceDocumentText() sdkgo.Mutation[ReplaceDocumentTextInput, ReplaceDocumentTextOutput] {
+	return operations.client.ReplaceDocumentText()
+}
+func (operations clientOperations) AppendText() sdkgo.Mutation[AppendTextInput, AppendTextOutput] {
+	return operations.client.AppendText()
 }
 
 // NewConnection wraps a client built with New, such as a test client with a static credential provider.
@@ -61,7 +86,19 @@ func NewConnection(client *Client, reference sdkgo.ConnectionRef) (Connection, e
 	if err := reference.Validate(); err != nil {
 		return Connection{}, fmt.Errorf("google-docs connector connection: %w", err)
 	}
-	return Connection{client: client, reference: reference}, nil
+	return Connection{client: client, operations: clientOperations{client: client}, reference: reference}, nil
+}
+
+// NewConnectionWithOperations binds other operations, such as a generated mock package's, to a connection.
+// The connection serves operation Steps only: Trigger factories and runners require NewConnection.
+func NewConnectionWithOperations(operations Operations, reference sdkgo.ConnectionRef) (Connection, error) {
+	if operations == nil {
+		return Connection{}, fmt.Errorf("google-docs connector operations are required")
+	}
+	if err := reference.Validate(); err != nil {
+		return Connection{}, fmt.Errorf("google-docs connector connection: %w", err)
+	}
+	return Connection{operations: operations, reference: reference}, nil
 }
 
 // NewProjectConnection opens the connection that dex-app.yaml declares as connectionName from the
@@ -103,6 +140,10 @@ func decodeCredentials(contents json.RawMessage) (Credentials, error) {
 	if err := projectconfig.DecodeCredentials(contents, &fields); err != nil {
 		return Credentials{}, err
 	}
+	// Credentials saved before the connector declared auth methods carry no auth_method; they use the default method.
+	if fields.AuthMethodID == "" {
+		fields.AuthMethodID = "google-oauth"
+	}
 	credentials := Credentials{
 		AuthMethodID:      fields.AuthMethodID,
 		OAuthClientID:     fields.OAuthClientID,
@@ -137,7 +178,17 @@ func encodeCredentials(credentials Credentials) (json.RawMessage, error) {
 }
 
 func (connection Connection) validate() error {
+	if connection.client == nil && connection.operations != nil {
+		return fmt.Errorf("google-docs connector connection from NewConnectionWithOperations serves only operation Steps")
+	}
 	if connection.client == nil {
+		return fmt.Errorf("google-docs connector connection is required")
+	}
+	return connection.reference.Validate()
+}
+
+func (connection Connection) validateOperations() error {
+	if connection.operations == nil {
 		return fmt.Errorf("google-docs connector connection is required")
 	}
 	return connection.reference.Validate()
@@ -278,7 +329,7 @@ type GetDocumentTextStepConfig[IN any] struct {
 }
 
 func NewGetDocumentTextStep[IN any](config GetDocumentTextStepConfig[IN]) sdkgo.QueryStep[IN, GetDocumentTextInput, GetDocumentTextOutput] {
-	if err := config.Connection.validate(); err != nil {
+	if err := config.Connection.validateOperations(); err != nil {
 		panic(err)
 	}
 	if config.ConnectionName != config.Connection.reference.Name {
@@ -287,7 +338,7 @@ func NewGetDocumentTextStep[IN any](config GetDocumentTextStepConfig[IN]) sdkgo.
 	return sdkgo.MustNewQueryStep(sdkgo.QueryStepConfig[IN, GetDocumentTextInput, GetDocumentTextOutput]{
 		StepType: config.StepType, Annotations: config.Annotations,
 		ConfigurationUI: config.ConfigurationUI,
-		Operation:       config.Connection.client.GetDocumentText(), Connection: config.Connection.reference,
+		Operation:       config.Connection.operations.GetDocumentText(), Connection: config.Connection.reference,
 		MapToOperationInput: config.MapToOperationInput,
 		Branches: func() []sdkgo.BranchTarget[GetDocumentTextResult] {
 			branches := make([]sdkgo.BranchTarget[GetDocumentTextResult], 0, 6)
@@ -360,7 +411,7 @@ type CreateDocumentStepConfig[IN any] struct {
 }
 
 func NewCreateDocumentStep[IN any](config CreateDocumentStepConfig[IN]) sdkgo.MutationStep[IN, CreateDocumentInput, CreateDocumentOutput] {
-	if err := config.Connection.validate(); err != nil {
+	if err := config.Connection.validateOperations(); err != nil {
 		panic(err)
 	}
 	if config.ConnectionName != config.Connection.reference.Name {
@@ -369,7 +420,7 @@ func NewCreateDocumentStep[IN any](config CreateDocumentStepConfig[IN]) sdkgo.Mu
 	return sdkgo.MustNewMutationStep(sdkgo.MutationStepConfig[IN, CreateDocumentInput, CreateDocumentOutput]{
 		StepType: config.StepType, Annotations: config.Annotations,
 		ConfigurationUI: config.ConfigurationUI,
-		Operation:       config.Connection.client.CreateDocument(), Connection: config.Connection.reference,
+		Operation:       config.Connection.operations.CreateDocument(), Connection: config.Connection.reference,
 		MapToOperationInput: config.MapToOperationInput,
 		Branches: func() []sdkgo.BranchTarget[CreateDocumentResult] {
 			branches := make([]sdkgo.BranchTarget[CreateDocumentResult], 0, 5)
@@ -445,7 +496,7 @@ type ReplaceDocumentTextStepConfig[IN any] struct {
 }
 
 func NewReplaceDocumentTextStep[IN any](config ReplaceDocumentTextStepConfig[IN]) sdkgo.MutationStep[IN, ReplaceDocumentTextInput, ReplaceDocumentTextOutput] {
-	if err := config.Connection.validate(); err != nil {
+	if err := config.Connection.validateOperations(); err != nil {
 		panic(err)
 	}
 	if config.ConnectionName != config.Connection.reference.Name {
@@ -454,7 +505,7 @@ func NewReplaceDocumentTextStep[IN any](config ReplaceDocumentTextStepConfig[IN]
 	return sdkgo.MustNewMutationStep(sdkgo.MutationStepConfig[IN, ReplaceDocumentTextInput, ReplaceDocumentTextOutput]{
 		StepType: config.StepType, Annotations: config.Annotations,
 		ConfigurationUI: config.ConfigurationUI,
-		Operation:       config.Connection.client.ReplaceDocumentText(), Connection: config.Connection.reference,
+		Operation:       config.Connection.operations.ReplaceDocumentText(), Connection: config.Connection.reference,
 		MapToOperationInput: config.MapToOperationInput,
 		Branches: func() []sdkgo.BranchTarget[ReplaceDocumentTextResult] {
 			branches := make([]sdkgo.BranchTarget[ReplaceDocumentTextResult], 0, 7)
@@ -533,7 +584,7 @@ type AppendTextStepConfig[IN any] struct {
 }
 
 func NewAppendTextStep[IN any](config AppendTextStepConfig[IN]) sdkgo.MutationStep[IN, AppendTextInput, AppendTextOutput] {
-	if err := config.Connection.validate(); err != nil {
+	if err := config.Connection.validateOperations(); err != nil {
 		panic(err)
 	}
 	if config.ConnectionName != config.Connection.reference.Name {
@@ -542,7 +593,7 @@ func NewAppendTextStep[IN any](config AppendTextStepConfig[IN]) sdkgo.MutationSt
 	return sdkgo.MustNewMutationStep(sdkgo.MutationStepConfig[IN, AppendTextInput, AppendTextOutput]{
 		StepType: config.StepType, Annotations: config.Annotations,
 		ConfigurationUI: config.ConfigurationUI,
-		Operation:       config.Connection.client.AppendText(), Connection: config.Connection.reference,
+		Operation:       config.Connection.operations.AppendText(), Connection: config.Connection.reference,
 		MapToOperationInput: config.MapToOperationInput,
 		Branches: func() []sdkgo.BranchTarget[AppendTextResult] {
 			branches := make([]sdkgo.BranchTarget[AppendTextResult], 0, 6)
