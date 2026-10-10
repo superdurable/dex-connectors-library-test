@@ -89,3 +89,5 @@ failure classification, redirects, malformed responses, and size bounds.
 The example tests use a real Dex Server for retries, deduplicated reads,
 default English, source links, durable waiting, and Worker replacement.
 They use deterministic summary output and do not require Codex credentials.
+
+Release candidate verification of the Release Connector Candidate workflow.
